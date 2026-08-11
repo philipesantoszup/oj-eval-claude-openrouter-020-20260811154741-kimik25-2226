@@ -10,14 +10,11 @@
 static void *g_base = NULL;
 static int g_total_pages = 0;
 
-struct Block {
-    struct Block *next;
-    struct Block *prev;
-};
+struct Block { struct Block *next, *prev; };
 
 static struct Block *free_list[MAX_RANK + 1];
 static unsigned char alloc_rank[MAX_PAGES];
-static unsigned char free_block_rank[MAX_PAGES];
+static unsigned char free_start_rank[MAX_PAGES];
 static unsigned char containing_rank[MAX_PAGES];
 
 static inline int addr_to_idx(void *p) {
@@ -29,121 +26,95 @@ static inline void *idx_to_addr(int idx) {
 }
 
 static inline int is_valid_addr(void *p) {
-    unsigned long offset = (unsigned long)p - (unsigned long)g_base;
-    if (offset >= ((unsigned long)g_total_pages << PAGE_SHIFT)) return 0;
-    if (offset & ((1 << PAGE_SHIFT) - 1)) return 0;
-    return 1;
+    unsigned long o = (unsigned long)p - (unsigned long)g_base;
+    return (o < ((unsigned long)g_total_pages << PAGE_SHIFT)) && !(o & ((1 << PAGE_SHIFT) - 1));
 }
 
-/* Update containing_rank for a range of pages */
-static inline void set_containing_rank(int start_idx, int page_count, int rank) {
-    int i;
-    for (i = 0; i < page_count; i++) {
-        containing_rank[start_idx + i] = (unsigned char)rank;
-    }
+static inline void set_containing(int start, int n, int rank) {
+    memset(containing_rank + start, rank, n);
 }
 
 int init_page(void *p, int pgcount) {
-    int i;
     int max_rank = MIN_RANK;
-
-    g_base = p;
-    g_total_pages = pgcount;
-
-    for (i = MIN_RANK; i <= MAX_RANK; i++) free_list[i] = NULL;
+    g_base = p; g_total_pages = pgcount;
+    memset(free_list, 0, sizeof(free_list));
     memset(alloc_rank, 0, pgcount);
-    memset(free_block_rank, 0, pgcount);
+    memset(free_start_rank, 0, pgcount);
     memset(containing_rank, 0, pgcount);
-
     while ((1 << (max_rank - 1)) < pgcount && max_rank < MAX_RANK) max_rank++;
-
-    if (max_rank <= MAX_RANK && pgcount > 0) {
-        struct Block *block = (struct Block *)p;
-        block->next = block->prev = NULL;
-        free_list[max_rank] = block;
-        free_block_rank[0] = (unsigned char)max_rank;
-        set_containing_rank(0, pgcount, max_rank);
+    if (pgcount > 0) {
+        struct Block *b = (struct Block *)p;
+        b->next = b->prev = NULL; free_list[max_rank] = b;
+        free_start_rank[0] = max_rank;
+        set_containing(0, pgcount, max_rank);
     }
     return OK;
 }
 
-static inline void remove_from_free_list(int rank, struct Block *block) {
-    if (block->prev) block->prev->next = block->next;
-    else free_list[rank] = block->next;
-    if (block->next) block->next->prev = block->prev;
+static inline void remove_blk(int r, struct Block *b) {
+    if (b->prev) b->prev->next = b->next; else free_list[r] = b->next;
+    if (b->next) b->next->prev = b->prev;
 }
 
-static inline void add_to_free_list(int rank, struct Block *block) {
-    block->next = free_list[rank]; block->prev = NULL;
-    if (free_list[rank]) free_list[rank]->prev = block;
-    free_list[rank] = block;
+static inline void add_blk(int r, struct Block *b) {
+    b->next = free_list[r]; b->prev = NULL;
+    if (free_list[r]) free_list[r]->prev = b;
+    free_list[r] = b;
 }
 
 void *alloc_pages(int rank) {
-    int j, idx, buddy_idx, page_count;
-    struct Block *block, *buddy;
-    void *addr;
-
+    int j, idx, buddy;
+    struct Block *b, *bd;
     if (rank < MIN_RANK || rank > MAX_RANK) return ERR_PTR(-EINVAL);
     for (j = rank; j <= MAX_RANK && !free_list[j]; j++);
     if (j > MAX_RANK) return ERR_PTR(-ENOSPC);
-
-    block = free_list[j]; remove_from_free_list(j, block);
-    addr = (void *)block; idx = addr_to_idx(addr); free_block_rank[idx] = 0;
-    page_count = 1 << (j - 1);
-    set_containing_rank(idx, page_count, 0);
-
+    b = free_list[j]; remove_blk(j, b);
+    idx = addr_to_idx((void *)b); free_start_rank[idx] = 0;
+    set_containing(idx, 1 << (j - 1), 0);
     while (j > rank) {
-        j--; buddy_idx = idx + (1 << (j - 1)); buddy = (struct Block *)idx_to_addr(buddy_idx);
-        add_to_free_list(j, buddy); free_block_rank[buddy_idx] = (unsigned char)j;
-        set_containing_rank(buddy_idx, 1 << (j - 1), j);
+        j--; buddy = idx + (1 << (j - 1)); bd = (struct Block *)idx_to_addr(buddy);
+        add_blk(j, bd); free_start_rank[buddy] = j;
+        set_containing(buddy, 1 << (j - 1), j);
     }
-    alloc_rank[idx] = (unsigned char)rank;
-    return addr;
+    alloc_rank[idx] = rank;
+    return (void *)b;
 }
 
 int return_pages(void *p) {
-    int idx, rank, buddy_idx, page_count;
-    struct Block *block;
-
+    int idx, rank, buddy, sz;
+    struct Block *b;
     if (!p || !is_valid_addr(p)) return -EINVAL;
-    idx = addr_to_idx(p); rank = (int)alloc_rank[idx];
+    idx = addr_to_idx(p); rank = alloc_rank[idx];
     if (!rank) return -EINVAL;
-
-    alloc_rank[idx] = 0; block = (struct Block *)p;
-    add_to_free_list(rank, block); free_block_rank[idx] = (unsigned char)rank;
-    page_count = 1 << (rank - 1);
-    set_containing_rank(idx, page_count, rank);
-
+    alloc_rank[idx] = 0; b = (struct Block *)p;
+    add_blk(rank, b); free_start_rank[idx] = rank;
+    sz = 1 << (rank - 1); set_containing(idx, sz, rank);
     while (rank < MAX_RANK) {
-        buddy_idx = idx ^ (1 << (rank - 1));
-        if (free_block_rank[buddy_idx] != rank) break;
-        remove_from_free_list(rank, (struct Block *)idx_to_addr(buddy_idx));
-        free_block_rank[buddy_idx] = 0; remove_from_free_list(rank, block); free_block_rank[idx] = 0;
-        set_containing_rank(buddy_idx, page_count, 0);
-        if (buddy_idx < idx) { idx = buddy_idx; block = (struct Block *)idx_to_addr(idx); }
-        rank++; page_count <<= 1;
-        add_to_free_list(rank, block); free_block_rank[idx] = (unsigned char)rank;
-        set_containing_rank(idx, page_count, rank);
+        buddy = idx ^ sz;
+        if (free_start_rank[buddy] != rank) break;
+        remove_blk(rank, (struct Block *)idx_to_addr(buddy));
+        free_start_rank[buddy] = 0; remove_blk(rank, b); free_start_rank[idx] = 0;
+        set_containing(buddy, sz, 0);
+        if (buddy < idx) { idx = buddy; b = (struct Block *)idx_to_addr(idx); }
+        rank++; sz <<= 1;
+        add_blk(rank, b); free_start_rank[idx] = rank; set_containing(idx, sz, rank);
     }
     return OK;
 }
 
 int query_ranks(void *p) {
-    int idx, rank;
-
+    int idx, r;
     if (!p || !is_valid_addr(p)) return -EINVAL;
     idx = addr_to_idx(p);
-
-    if ((rank = alloc_rank[idx]) != 0) return rank;
-    if ((rank = free_block_rank[idx]) != 0) return rank;
+    if ((r = alloc_rank[idx])) return r;
+    if ((r = free_start_rank[idx])) return r;
     return containing_rank[idx] ? containing_rank[idx] : -EINVAL;
 }
 
 int query_page_counts(int rank) {
-    int count = 0;
-    struct Block *curr;
+    int c = 0;
+    struct Block *b;
     if (rank < MIN_RANK || rank > MAX_RANK) return -EINVAL;
-    for (curr = free_list[rank]; curr; curr = curr->next) count++;
-    return count;
+    for (b = free_list[rank]; b; b = b->next) c++;
+    return c;
 }
