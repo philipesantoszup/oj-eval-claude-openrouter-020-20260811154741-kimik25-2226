@@ -182,17 +182,25 @@ int return_pages(void *p) {
     return OK;
 }
 
-/* Check if idx is inside a free block of given rank */
-static inline int is_inside_free_block(int idx, int rank) {
-    int page_count = 1 << (rank - 1);
-    struct Block *curr = free_list[rank];
-    while (curr != NULL) {
-        int start_idx = addr_to_idx((void *)curr);
-        if ((unsigned int)(idx - start_idx) < (unsigned int)page_count) {
-            return 1;
+/* Check if idx is inside a free block by checking aligned boundaries */
+static int find_containing_rank(int idx) {
+    int rank;
+
+    for (rank = MAX_RANK; rank >= MIN_RANK; rank--) {
+        int page_count = 1 << (rank - 1);
+        struct Block *curr = free_list[rank];
+
+        while (curr != NULL) {
+            int start_idx = (int)(((unsigned long)curr - (unsigned long)g_base) >> PAGE_SHIFT);
+            int end_idx = start_idx + page_count;
+
+            if (idx >= start_idx && idx < end_idx) {
+                return rank;
+            }
+            curr = curr->next;
         }
-        curr = curr->next;
     }
+
     return 0;
 }
 
@@ -220,10 +228,9 @@ int query_ranks(void *p) {
         return rank;
     }
 
-    for (rank = MAX_RANK; rank >= MIN_RANK; rank--) {
-        if (is_inside_free_block(idx, rank)) {
-            return rank;
-        }
+    rank = find_containing_rank(idx);
+    if (rank != 0) {
+        return rank;
     }
 
     return -EINVAL;
