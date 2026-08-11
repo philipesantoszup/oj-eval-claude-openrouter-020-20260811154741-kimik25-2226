@@ -17,6 +17,7 @@ struct Block {
 static struct Block *free_list[MAX_RANK + 1];
 static unsigned char alloc_rank[MAX_PAGES];
 static unsigned char free_block_rank[MAX_PAGES];
+static unsigned char containing_rank[MAX_PAGES];
 
 static inline int addr_to_idx(void *p) {
     return ((unsigned long)p - (unsigned long)g_base) >> PAGE_SHIFT;
@@ -33,6 +34,14 @@ static inline int is_valid_addr(void *p) {
     return 1;
 }
 
+/* Update containing_rank for a range of pages */
+static inline void set_containing_rank(int start_idx, int page_count, int rank) {
+    int i;
+    for (i = 0; i < page_count; i++) {
+        containing_rank[start_idx + i] = (unsigned char)rank;
+    }
+}
+
 int init_page(void *p, int pgcount) {
     int i;
     int max_rank = MIN_RANK;
@@ -41,7 +50,7 @@ int init_page(void *p, int pgcount) {
     g_total_pages = pgcount;
 
     for (i = MIN_RANK; i <= MAX_RANK; i++) free_list[i] = NULL;
-    for (i = 0; i < pgcount; i++) { alloc_rank[i] = 0; free_block_rank[i] = 0; }
+    for (i = 0; i < pgcount; i++) { alloc_rank[i] = 0; free_block_rank[i] = 0; containing_rank[i] = 0; }
 
     while ((1 << (max_rank - 1)) < pgcount && max_rank < MAX_RANK) max_rank++;
 
@@ -50,6 +59,7 @@ int init_page(void *p, int pgcount) {
         block->next = block->prev = NULL;
         free_list[max_rank] = block;
         free_block_rank[0] = (unsigned char)max_rank;
+        set_containing_rank(0, pgcount, max_rank);
     }
     return OK;
 }
@@ -67,7 +77,7 @@ static inline void add_to_free_list(int rank, struct Block *block) {
 }
 
 void *alloc_pages(int rank) {
-    int j, idx, buddy_idx;
+    int j, idx, buddy_idx, page_count;
     struct Block *block, *buddy;
     void *addr;
 
@@ -77,17 +87,20 @@ void *alloc_pages(int rank) {
 
     block = free_list[j]; remove_from_free_list(j, block);
     addr = (void *)block; idx = addr_to_idx(addr); free_block_rank[idx] = 0;
+    page_count = 1 << (j - 1);
+    set_containing_rank(idx, page_count, 0);
 
     while (j > rank) {
         j--; buddy_idx = idx + (1 << (j - 1)); buddy = (struct Block *)idx_to_addr(buddy_idx);
         add_to_free_list(j, buddy); free_block_rank[buddy_idx] = (unsigned char)j;
+        set_containing_rank(buddy_idx, 1 << (j - 1), j);
     }
     alloc_rank[idx] = (unsigned char)rank;
     return addr;
 }
 
 int return_pages(void *p) {
-    int idx, rank, buddy_idx;
+    int idx, rank, buddy_idx, page_count;
     struct Block *block;
 
     if (!p || !is_valid_addr(p)) return -EINVAL;
@@ -96,36 +109,32 @@ int return_pages(void *p) {
 
     alloc_rank[idx] = 0; block = (struct Block *)p;
     add_to_free_list(rank, block); free_block_rank[idx] = (unsigned char)rank;
+    page_count = 1 << (rank - 1);
+    set_containing_rank(idx, page_count, rank);
 
     while (rank < MAX_RANK) {
         buddy_idx = idx ^ (1 << (rank - 1));
         if (free_block_rank[buddy_idx] != rank) break;
         remove_from_free_list(rank, (struct Block *)idx_to_addr(buddy_idx));
         free_block_rank[buddy_idx] = 0; remove_from_free_list(rank, block); free_block_rank[idx] = 0;
+        set_containing_rank(buddy_idx, page_count, 0);
         if (buddy_idx < idx) { idx = buddy_idx; block = (struct Block *)idx_to_addr(idx); }
-        rank++; add_to_free_list(rank, block); free_block_rank[idx] = (unsigned char)rank;
+        rank++; page_count <<= 1;
+        add_to_free_list(rank, block); free_block_rank[idx] = (unsigned char)rank;
+        set_containing_rank(idx, page_count, rank);
     }
     return OK;
 }
 
 int query_ranks(void *p) {
     int idx, rank;
-    struct Block *curr;
 
     if (!p || !is_valid_addr(p)) return -EINVAL;
     idx = addr_to_idx(p);
 
     if ((rank = alloc_rank[idx]) != 0) return rank;
     if ((rank = free_block_rank[idx]) != 0) return rank;
-
-    for (rank = MAX_RANK; rank >= MIN_RANK; rank--) {
-        int page_count = 1 << (rank - 1);
-        for (curr = free_list[rank]; curr; curr = curr->next) {
-            int start_idx = (int)((((unsigned long)curr - (unsigned long)g_base) >> PAGE_SHIFT));
-            if ((unsigned int)(idx - start_idx) < (unsigned int)page_count) return rank;
-        }
-    }
-    return -EINVAL;
+    return containing_rank[idx] ? containing_rank[idx] : -EINVAL;
 }
 
 int query_page_counts(int rank) {
