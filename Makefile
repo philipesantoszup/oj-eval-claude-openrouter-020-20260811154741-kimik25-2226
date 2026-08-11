@@ -1,3 +1,3 @@
 .PHONY: all
 code:
-	gcc -O3 -o code main.c buddy.c
+	gcc -Ofast -o code main.c buddy.c

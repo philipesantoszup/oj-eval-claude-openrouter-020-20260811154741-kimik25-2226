@@ -1,4 +1,5 @@
 #include "buddy.h"
+#include <string.h>
 #define NULL ((void *)0)
 
 #define MIN_RANK 1
@@ -50,7 +51,9 @@ int init_page(void *p, int pgcount) {
     g_total_pages = pgcount;
 
     for (i = MIN_RANK; i <= MAX_RANK; i++) free_list[i] = NULL;
-    for (i = 0; i < pgcount; i++) { alloc_rank[i] = 0; free_block_rank[i] = 0; containing_rank[i] = 0; }
+    memset(alloc_rank, 0, pgcount);
+    memset(free_block_rank, 0, pgcount);
+    memset(containing_rank, 0, pgcount);
 
     while ((1 << (max_rank - 1)) < pgcount && max_rank < MAX_RANK) max_rank++;
 
