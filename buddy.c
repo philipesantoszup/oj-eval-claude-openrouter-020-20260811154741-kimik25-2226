@@ -1,5 +1,6 @@
 #include "buddy.h"
 #include <string.h>
+#include <stdint.h>
 #define NULL ((void *)0)
 
 #define MIN_RANK 1
@@ -13,9 +14,9 @@ static int g_total_pages = 0;
 struct Block { struct Block *next, *prev; };
 
 static struct Block *free_list[MAX_RANK + 1];
-static unsigned char alloc_rank[MAX_PAGES];
-static unsigned char free_start_rank[MAX_PAGES];
-static unsigned char containing_rank[MAX_PAGES];
+static uint8_t alloc_rank[MAX_PAGES];
+static uint8_t free_start_rank[MAX_PAGES];
+static uint8_t containing_rank[MAX_PAGES];
 
 static inline int addr_to_idx(void *p) {
     return ((unsigned long)p - (unsigned long)g_base) >> PAGE_SHIFT;
