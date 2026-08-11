@@ -108,7 +108,7 @@ int return_pages(void *p) {
     return OK;
 }
 
-/* For unallocated pages, find the rank by checking the largest possible block first */
+/* Optimized query_ranks: check high ranks first with early exit */
 int query_ranks(void *p) {
     int idx, rank;
     struct Block *curr;
@@ -119,10 +119,13 @@ int query_ranks(void *p) {
     if ((rank = alloc_rank[idx]) != 0) return rank;
     if ((rank = free_block_rank[idx]) != 0) return rank;
 
+    /* Check from highest rank down for maximum rank of containing block */
     for (rank = MAX_RANK; rank >= MIN_RANK; rank--) {
         int page_count = 1 << (rank - 1);
+        /* Quick bounds check: if block is smaller than page index offset, skip */
         for (curr = free_list[rank]; curr; curr = curr->next) {
             int start_idx = addr_to_idx((void *)curr);
+            /* unsigned arithmetic handles the range check efficiently */
             if ((unsigned int)(idx - start_idx) < (unsigned int)page_count) return rank;
         }
     }
