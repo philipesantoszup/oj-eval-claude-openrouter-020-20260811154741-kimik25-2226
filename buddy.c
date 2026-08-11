@@ -108,7 +108,6 @@ int return_pages(void *p) {
     return OK;
 }
 
-/* Optimized query_ranks: check high ranks first with early exit */
 int query_ranks(void *p) {
     int idx, rank;
     struct Block *curr;
@@ -119,13 +118,10 @@ int query_ranks(void *p) {
     if ((rank = alloc_rank[idx]) != 0) return rank;
     if ((rank = free_block_rank[idx]) != 0) return rank;
 
-    /* Check from highest rank down for maximum rank of containing block */
     for (rank = MAX_RANK; rank >= MIN_RANK; rank--) {
         int page_count = 1 << (rank - 1);
-        /* Quick bounds check: if block is smaller than page index offset, skip */
         for (curr = free_list[rank]; curr; curr = curr->next) {
-            int start_idx = addr_to_idx((void *)curr);
-            /* unsigned arithmetic handles the range check efficiently */
+            int start_idx = (int)((((unsigned long)curr - (unsigned long)g_base) >> PAGE_SHIFT));
             if ((unsigned int)(idx - start_idx) < (unsigned int)page_count) return rank;
         }
     }
