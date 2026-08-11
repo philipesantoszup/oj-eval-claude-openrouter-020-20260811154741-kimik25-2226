@@ -6,7 +6,6 @@
 #define MIN_RANK 1
 #define MAX_RANK 16
 #define PAGE_SHIFT 12
-#define MAX_PAGES 32768
 
 static void *g_base = NULL;
 static int g_total_pages = 0;
@@ -14,8 +13,8 @@ static int g_total_pages = 0;
 struct Block { struct Block *next, *prev; };
 
 static struct Block *free_list[MAX_RANK + 1];
-static uint8_t alloc_rank[MAX_PAGES];
-static uint8_t free_start_rank[MAX_PAGES];
+static uint8_t alloc_rank[32768];
+static uint8_t free_start_rank[32768];
 
 static inline int addr_to_idx(void *p) {
     return ((unsigned long)p - (unsigned long)g_base) >> PAGE_SHIFT;
@@ -27,21 +26,21 @@ static inline void *idx_to_addr(int idx) {
 
 static inline int is_valid_addr(void *p) {
     unsigned long o = (unsigned long)p - (unsigned long)g_base;
-    return (o < ((unsigned long)g_total_pages << PAGE_SHIFT)) && !(o & ((1 << PAGE_SHIFT) - 1));
+    return (o < ((unsigned long)g_total_pages << PAGE_SHIFT)) && !(o & 4095);
 }
 
 int init_page(void *p, int pgcount) {
-    int max_rank = MIN_RANK;
+    int max_rank;
     g_base = p; g_total_pages = pgcount;
     memset(free_list, 0, sizeof(free_list));
+    if (pgcount <= 0) return OK;
+    max_rank = 32 - __builtin_clz(pgcount - 1) + 1;
+    if (max_rank > MAX_RANK) max_rank = MAX_RANK;
     memset(alloc_rank, 0, pgcount);
     memset(free_start_rank, 0, pgcount);
-    while ((1 << (max_rank - 1)) < pgcount && max_rank < MAX_RANK) max_rank++;
-    if (pgcount > 0) {
-        struct Block *b = (struct Block *)p;
-        b->next = b->prev = NULL; free_list[max_rank] = b;
-        free_start_rank[0] = max_rank;
-    }
+    struct Block *b = (struct Block *)p;
+    b->next = b->prev = NULL; free_list[max_rank] = b;
+    free_start_rank[0] = max_rank;
     return OK;
 }
 
@@ -102,7 +101,7 @@ int query_ranks(void *p) {
     for (rank = MAX_RANK; rank >= MIN_RANK; rank--) {
         int pc = 1 << (rank - 1);
         for (b = free_list[rank]; b; b = b->next) {
-            int si = addr_to_idx((void *)b);
+            int si = (int)((((unsigned long)b - (unsigned long)g_base) >> PAGE_SHIFT));
             if ((unsigned int)(idx - si) < (unsigned int)pc) return rank;
         }
     }
